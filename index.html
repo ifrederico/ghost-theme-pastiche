@@ -1,0 +1,1050 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Accessible Popover Menu (Polyfill + Keyboard/Pointer Modes)</title>
+  <style>
+    /* --------------------------------------------------------------------------------
+       REQUIRED: Polyfill class escape to emulate :popover-open
+       (These two rules must appear exactly like this.)
+    -------------------------------------------------------------------------------- */
+    [popover]:not(.\:popover-open):not(:popover-open){display:none}
+    [popover].\:popover-open,[popover]:popover-open{display:block}
+
+    /* --------------------------------------------------------------------------------
+       Base demo styles
+    -------------------------------------------------------------------------------- */
+    :root{
+      --surface: #ffffff;
+      --text: #111827;
+      --muted:#6b7280;
+      --ring:#3b82f6;
+      --border:#e5e7eb;
+      --shadow: 0 10px 30px rgba(0,0,0,.08), 0 3px 8px rgba(0,0,0,.06);
+
+      /* Anchoring tunables */
+      --anchor-gap: 8px;   /* distance from trigger (main axis) */
+      --anchor-offset: 0;  /* nudge along cross-axis (+right/down, -left/up) */
+
+      --menu-radius: 12px;
+    }
+
+    * { box-sizing: border-box; }
+    body{
+      font: 16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
+      color: var(--text);
+      background: #f8fafc;
+      margin: 0; padding: 2rem;
+      min-height: 100vh;
+      display: grid;
+      place-items: start center;
+      gap: 2rem;
+    }
+    .stack { display: grid; gap: 1rem; }
+
+    button, a[role="menuitem"]{ font: inherit; }
+
+    /* Demo trigger button */
+    #menuButton{
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      padding: .6rem .9rem;
+      border-radius: 10px;
+      box-shadow: 0 1px 0 rgba(0,0,0,.02);
+      cursor: pointer;
+    }
+    #menuButton:focus-visible{
+      outline: 3px solid var(--ring);
+      outline-offset: 2px;
+    }
+
+    /* --------------------------------------------------------------------------------
+       Popover surface
+       We position via JS (fixed + top/left).
+    -------------------------------------------------------------------------------- */
+    [popover]{
+      position: fixed;  /* viewport coordinates */
+      z-index: 9999;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--menu-radius);
+      box-shadow: var(--shadow);
+      min-inline-size: 220px;
+      max-inline-size: min(90vw, 360px);
+      padding: .25rem;
+      overflow: auto;
+      transition: opacity 120ms ease, transform 120ms ease;
+    }
+    [popover]:not(.\:popover-open):not(:popover-open){
+      opacity: 0;
+      transform: scale(.98);
+    }
+    [popover].\:popover-open,[popover]:popover-open{
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    /* --------------------------------------------------------------------------------
+       Menu layout & states
+    -------------------------------------------------------------------------------- */
+    [role="menu"]{
+      list-style: none;
+      margin: 0;
+      padding: .25rem;
+      display: grid;
+      gap: .25rem;
+    }
+    .menu-section{ padding-block: .25rem; }
+
+    [role="menuitem"],
+    [role="menuitemcheckbox"],
+    [role="menuitemradio"]{
+      -webkit-appearance: none;
+      appearance: none;
+      display: grid;
+      grid-template-columns: 1.25rem 1fr auto;
+      align-items: center;
+      gap: .5rem;
+      width: 100%;
+      padding: .5rem .625rem;
+      border: 0;
+      background: transparent;
+      text-align: start;
+      border-radius: 8px;
+      cursor: pointer;
+      color: inherit;
+      text-decoration: none;
+    }
+    [role="menuitem"][aria-disabled="true"],
+    [role="menuitemcheckbox"][aria-disabled="true"],
+    [role="menuitemradio"][aria-disabled="true"]{
+      opacity: .5;
+      pointer-events: none;
+    }
+
+    /* Blue focus ring for keyboard focus */
+    [role="menuitem"]:focus-visible,
+    [role="menuitemcheckbox"]:focus-visible,
+    [role="menuitemradio"]:focus-visible{
+      outline: 3px solid var(--ring);
+      outline-offset: 1px;
+      background: #eff6ff;
+    }
+
+    /* Grey background for roving "current" item — only when in keyboard mode */
+    [role="menu"][data-nav="kbd"] [role="menuitem"].is-active,
+    [role="menu"][data-nav="kbd"] [role="menuitemcheckbox"].is-active,
+    [role="menu"][data-nav="kbd"] [role="menuitemradio"].is-active{
+      background: #f3f4f6;
+    }
+
+    /* Pointer hover highlight (won’t override :focus-visible ring) */
+    [role="menu"] [role="menuitem"]:not([aria-disabled="true"]):hover:not(:focus-visible),
+    [role="menu"] [role="menuitemcheckbox"]:not([aria-disabled="true"]):hover:not(:focus-visible),
+    [role="menu"] [role="menuitemradio"]:not([aria-disabled="true"]):hover:not(:focus-visible){
+      background: #f3f4f6;
+    }
+
+    /* icon/label/shortcut columns */
+    .mi-slot{ inline-size: 1.25rem; justify-self: center; font-size: .85em; color: var(--muted); }
+    .mi-label{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mi-kbd  { font-size: .75em; color: var(--muted); }
+
+    .separator{
+      height: 1px;
+      background: var(--border);
+      margin: .25rem;
+    }
+
+    /* Submenu caret (text content in demo uses ▶, this is a fallback) */
+    .has-submenu .mi-tail::after{
+      content: '▶';
+      font-size: .75em;
+    }
+
+    /* Screen-reader-only utility */
+    .sr-only{
+      position: absolute !important;
+      inline-size: 1px; block-size: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0);
+      white-space: nowrap; border: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="stack">
+    <h1>Accessible Popover Menu (HTML Popover API + Polyfill)</h1>
+
+    <button id="menuButton"
+      aria-haspopup="menu"
+      aria-expanded="false"
+      aria-controls="menu"
+      type="button">
+      Open Menu
+    </button>
+
+    <!-- Main menu -->
+    <div id="menu" popover role="menu" aria-label="Main menu" data-placement="bottom-start">
+      <div class="menu-section" aria-label="Navigation">
+        <a role="menuitem" href="https://example.com" class="mi">
+          <span class="mi-slot" aria-hidden="true">🏠</span>
+          <span class="mi-label">Home</span>
+        </a>
+
+        <button role="menuitem" type="button" class="mi" id="mi-settings">
+          <span class="mi-slot" aria-hidden="true">⚙️</span>
+          <span class="mi-label">Settings</span>
+        </button>
+
+      </div>
+
+      <div class="separator" role="separator" aria-hidden="true"></div>
+
+      <div class="menu-section" aria-label="Options">
+        <button role="menuitemcheckbox" aria-checked="true" type="button" class="mi" id="opt-notifications">
+          <span class="mi-slot" aria-hidden="true">🔔</span>
+          <span class="mi-label">Notifications</span>
+        </button>
+
+        <button role="menuitemcheckbox" aria-checked="false" type="button" class="mi" id="opt-compact">
+          <span class="mi-slot" aria-hidden="true">🧱</span>
+          <span class="mi-label">Compact view</span>
+        </button>
+
+        <button role="menuitemradio" data-radio-group="sort" aria-checked="true" type="button" class="mi">
+          <span class="mi-slot" aria-hidden="true">↕️</span>
+          <span class="mi-label">Sort: Recent</span>
+        </button>
+        <button role="menuitemradio" data-radio-group="sort" aria-checked="false" type="button" class="mi">
+          <span class="mi-slot" aria-hidden="true">↕️</span>
+          <span class="mi-label">Sort: Popular</span>
+        </button>
+      </div>
+
+      <div class="separator" role="separator" aria-hidden="true"></div>
+
+      <form class="menu-section" aria-label="Account" onsubmit="event.preventDefault(); alert('Signed out!');">
+        <button role="menuitem" type="submit" class="mi">
+          <span class="mi-slot" aria-hidden="true">🚪</span>
+          <span class="mi-label">Sign out</span>
+        </button>
+      </form>
+    </div>
+
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tailwindplus/elements@1" type="module"></script>
+  <script>
+  (function(){
+    'use strict';
+
+    /* ================================================================================
+       Enhanced Menu Controller with Modern Patterns
+       - AbortController signal pattern for cleanup
+       - Disposable resource management
+       - Enhanced focus management and restoration
+       - Transition management system
+       - Mobile/touch handling improvements
+       - Scroll lock with mobile support
+    ================================================================================ */
+
+    // Utility: AbortController polyfill
+    if (typeof AbortController === 'undefined') {
+      window.AbortController = class {
+        constructor() {
+          this.signal = { aborted: false, addEventListener: function() {} };
+        }
+        abort() {
+          this.signal.aborted = true;
+        }
+      };
+    }
+
+    // Utility: Disposable resource management
+    function createDisposable() {
+      var cleanupFunctions = [];
+      var api = {
+        addEventListener: function(element, event, handler, options) {
+          element.addEventListener(event, handler, options);
+          return api.add(function() {
+            element.removeEventListener(event, handler, options);
+          });
+        },
+        setTimeout: function(callback, delay) {
+          var id = setTimeout(callback, delay);
+          return api.add(function() {
+            clearTimeout(id);
+          });
+        },
+        requestAnimationFrame: function(callback) {
+          var id = requestAnimationFrame(callback);
+          return api.add(function() {
+            cancelAnimationFrame(id);
+          });
+        },
+        add: function(cleanup) {
+          if (cleanupFunctions.indexOf(cleanup) === -1) {
+            cleanupFunctions.push(cleanup);
+          }
+          return function() {
+            var index = cleanupFunctions.indexOf(cleanup);
+            if (index !== -1) {
+              cleanupFunctions.splice(index, 1);
+              cleanup();
+            }
+          };
+        },
+        dispose: function() {
+          for (var i = 0; i < cleanupFunctions.length; i++) {
+            try {
+              cleanupFunctions[i]();
+            } catch (e) {
+              console.error('Cleanup error:', e);
+            }
+          }
+          cleanupFunctions.length = 0;
+        }
+      };
+      return api;
+    }
+
+    // Utility: Enhanced focus management
+    var focusHistory = [];
+    function storeFocus(element) {
+      if (element && element !== document.body && element.isConnected) {
+        focusHistory.unshift(element);
+        if (focusHistory.length > 10) focusHistory.length = 10;
+      }
+    }
+
+    function restoreFocus(fallback) {
+      for (var i = 0; i < focusHistory.length; i++) {
+        var el = focusHistory[i];
+        if (el && el.isConnected && el !== document.activeElement) {
+          try {
+            el.focus({ preventScroll: true });
+            return true;
+          } catch (e) {
+            // Continue to next element
+          }
+        }
+      }
+      if (fallback && fallback.isConnected) {
+        try {
+          fallback.focus({ preventScroll: true });
+          return true;
+        } catch (e) {
+          // Fallback failed
+        }
+      }
+      return false;
+    }
+
+    // Utility: Transition management
+    function createTransitionManager(element, additionalElements) {
+      var transitionState = null;
+      var disposable = createDisposable();
+
+      return {
+        start: function(direction, callback) {
+          var elements = [element].concat(additionalElements || []);
+          transitionState = direction;
+
+          // Set initial transition state
+          for (var i = 0; i < elements.length; i++) {
+            var el = elements[i];
+            el.dataset.transition = '';
+            if (direction === 'in') {
+              el.dataset.enter = '';
+              delete el.dataset.leave;
+              delete el.dataset.closed;
+            } else {
+              el.dataset.leave = '';
+              delete el.dataset.enter;
+            }
+          }
+
+          // Use requestAnimationFrame for smooth transitions
+          disposable.requestAnimationFrame(function() {
+            disposable.requestAnimationFrame(function() {
+              // Complete transition state
+              for (var i = 0; i < elements.length; i++) {
+                var el = elements[i];
+                if (direction === 'in') {
+                  delete el.dataset.enter;
+                } else {
+                  delete el.dataset.leave;
+                  el.dataset.closed = '';
+                }
+              }
+
+              // Wait for transitions to complete
+              var transitions = [];
+              for (var i = 0; i < elements.length; i++) {
+                var animations = elements[i].getAnimations ? elements[i].getAnimations() : [];
+                transitions = transitions.concat(animations);
+              }
+
+              if (transitions.length > 0) {
+                Promise.allSettled(transitions.map(function(anim) {
+                  return anim.finished;
+                })).then(function() {
+                  if (callback) callback();
+                });
+              } else {
+                if (callback) callback();
+              }
+            });
+          });
+        },
+        
+        abort: function() {
+          disposable.dispose();
+          transitionState = null;
+        }
+      };
+    }
+
+    // Utility: Mobile scroll lock
+    var scrollLocks = new Map();
+    function createScrollLock(signal) {
+      if (scrollLocks.has(document)) {
+        var existing = scrollLocks.get(document);
+        existing.count++;
+        return function() {
+          existing.count--;
+          if (existing.count <= 0) {
+            existing.restore();
+            scrollLocks.delete(document);
+          }
+        };
+      }
+
+      var originalScrollY = window.scrollY || window.pageYOffset;
+      var originalOverflow = document.body.style.overflow;
+      var originalPosition = document.body.style.position;
+      var originalTop = document.body.style.top;
+      var originalWidth = document.body.style.width;
+
+      // Check for mobile
+      var isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+      if (isMobile) {
+        document.body.style.position = 'fixed';
+        document.body.style.top = '-' + originalScrollY + 'px';
+        document.body.style.width = '100%';
+        document.body.style.overflow = 'hidden';
+      } else {
+        document.body.style.overflow = 'hidden';
+      }
+
+      var lock = {
+        count: 1,
+        restore: function() {
+          document.body.style.overflow = originalOverflow;
+          document.body.style.position = originalPosition;
+          document.body.style.top = originalTop;
+          document.body.style.width = originalWidth;
+          
+          if (isMobile) {
+            window.scrollTo(0, originalScrollY);
+          }
+        }
+      };
+
+      scrollLocks.set(document, lock);
+
+      if (signal) {
+        signal.addEventListener('abort', function() {
+          lock.count--;
+          if (lock.count <= 0) {
+            lock.restore();
+            scrollLocks.delete(document);
+          }
+        });
+      }
+
+      return function() {
+        lock.count--;
+        if (lock.count <= 0) {
+          lock.restore();
+          scrollLocks.delete(document);
+        }
+      };
+    }
+
+    // Popover polyfill (keeping existing implementation)
+    var SUPPORTS_POPOVER = typeof HTMLElement !== 'undefined' && 'showPopover' in HTMLElement.prototype;
+    var OPEN_CLASS = ':popover-open';
+
+    function isPopoverElement(el) {
+      return el && el.nodeType === 1 && el.hasAttribute('popover');
+    }
+
+    function getState(el) {
+      return el.classList.contains(OPEN_CLASS) || (SUPPORTS_POPOVER && el.matches(':popover-open')) ? 'open' : 'closed';
+    }
+
+    function dispatchToggle(el, newState, oldState) {
+      var e1 = new Event('beforetoggle', {bubbles:false, cancelable:true});
+      e1.newState = newState; e1.oldState = oldState;
+      el.dispatchEvent(e1);
+      if (e1.defaultPrevented) return false;
+
+      var e2 = new Event('toggle', {bubbles:false, cancelable:false});
+      e2.newState = newState; e2.oldState = oldState;
+      setTimeout(function(){ el.dispatchEvent(e2); }, 0);
+      return true;
+    }
+
+    function polyShow(el) {
+      if(!isPopoverElement(el) || getState(el)==='open') return;
+      if(!dispatchToggle(el,'open','closed')) return;
+      el.classList.add(OPEN_CLASS);
+    }
+
+    function polyHide(el) {
+      if(!isPopoverElement(el) || getState(el)==='closed') return;
+      if(!dispatchToggle(el,'closed','open')) return;
+      el.classList.remove(OPEN_CLASS);
+    }
+
+    function polyToggle(el, force) {
+      var open = getState(el)==='open';
+      if(force === true || (force !== false && !open)) polyShow(el);
+      else polyHide(el);
+    }
+
+    if(!SUPPORTS_POPOVER){
+      if(!('showPopover' in HTMLElement.prototype)){
+        Object.defineProperty(HTMLElement.prototype, 'showPopover', { value: function(){ polyShow(this); }, configurable:true });
+      }
+      if(!('hidePopover' in HTMLElement.prototype)){
+        Object.defineProperty(HTMLElement.prototype, 'hidePopover', { value: function(){ polyHide(this); }, configurable:true });
+      }
+      if(!('togglePopover' in HTMLElement.prototype)){
+        Object.defineProperty(HTMLElement.prototype, 'togglePopover', { value: function(force){ polyToggle(this, force); }, configurable:true });
+      }
+    }
+
+    // Enhanced positioning (keeping existing implementation)
+    function pxNum(v, fallback){ var n=parseFloat(v); return isNaN(n)?fallback:n; }
+    function getVars(el){ var cs=getComputedStyle(el); return { gap:pxNum(cs.getPropertyValue('--anchor-gap'),8), offset:pxNum(cs.getPropertyValue('--anchor-offset'),0)}; }
+    function parsePlacement(str, dir){
+      str = (str||'').toLowerCase().trim() || 'bottom-start';
+      var parts = str.split('-'), base = parts[0], align = parts[1] || 'center';
+      if(base==='top'||base==='bottom'){
+        if(align==='start') align = dir==='rtl' ? 'end' : 'start';
+        if(align==='end')   align = dir==='rtl' ? 'start' : 'end';
+      }
+      return {base:base, align:align};
+    }
+    function flipOf(base){ return base==='top'?'bottom':base==='bottom'?'top':base==='left'?'right':'left'; }
+    function measure(el){
+      var hidden = !SUPPORTS_POPOVER && !el.classList.contains(OPEN_CLASS);
+      if(hidden){ el.style.visibility='hidden'; el.classList.add(OPEN_CLASS); }
+      var r = el.getBoundingClientRect();
+      if(hidden){ el.classList.remove(OPEN_CLASS); el.style.visibility=''; }
+      return {width: r.width || el.offsetWidth || 0, height: r.height || el.offsetHeight || 0};
+    }
+    function compute(triggerRect, menuSize, placement, gap, offset, viewport){
+      var w=menuSize.width, h=menuSize.height, vw=viewport.width, vh=viewport.height;
+      function coords(base, align){
+        var top=0,left=0;
+        if(base==='bottom'){
+          top = triggerRect.bottom + gap;
+          if(align==='start') left = triggerRect.left + offset;
+          else if(align==='end') left = triggerRect.right - w + offset;
+          else left = triggerRect.left + (triggerRect.width - w)/2 + offset;
+        }else if(base==='top'){
+          top = triggerRect.top - h - gap;
+          if(align==='start') left = triggerRect.left + offset;
+          else if(align==='end') left = triggerRect.right - w + offset;
+          else left = triggerRect.left + (triggerRect.width - w)/2 + offset;
+        }else if(base==='right'){
+          left = triggerRect.right + gap;
+          if(align==='start') top = triggerRect.top + offset;
+          else if(align==='end') top = triggerRect.bottom - h + offset;
+          else top = triggerRect.top + (triggerRect.height - h)/2 + offset;
+        }else if(base==='left'){
+          left = triggerRect.left - w - gap;
+          if(align==='start') top = triggerRect.top + offset;
+          else if(align==='end') top = triggerRect.bottom - h + offset;
+          else top = triggerRect.top + (triggerRect.height - h)/2 + offset;
+        }
+        return {top:top,left:left};
+      }
+      function overflows(c){ return c.left<4 || c.top<4 || c.left+w>vw-4 || c.top+h>vh-4; }
+      var base=placement.base, align=placement.align, c=coords(base,align);
+      if(overflows(c)){
+        var fb = flipOf(base), c2 = coords(fb, align);
+        if(!overflows(c2)){ base=fb; c=c2; }
+      }
+      c.top  = Math.max(4, Math.min(vh - h - 4, c.top));
+      c.left = Math.max(4, Math.min(vw - w - 4, c.left));
+      return { top: Math.round(c.top), left: Math.round(c.left), used: base + '-' + align };
+    }
+
+    /* ================================================================================
+       Enhanced Menu Controller
+    ================================================================================ */
+    function MenuController(trigger, menu, signal) {
+      this.trigger = trigger;
+      this.menu = menu;
+      this.signal = signal || new AbortController().signal;
+      this.disposable = createDisposable();
+      this.open = false;
+      this.currentIndex = -1;
+      this.kbdMode = false;
+      this.typeahead = {buffer:'', timeout:null};
+      this.submenus = new Map();
+      this.hoverTimers = new Map();
+      this.closeReason = null;
+      this.focusTrapEnabled = false;
+      this.transitionManager = createTransitionManager(this.menu);
+      this.scrollLockRelease = null;
+      this.lastFocused = null;
+      
+      this.init();
+    }
+
+    MenuController.prototype.init = function(){
+      var self = this;
+      if (this.signal.aborted) return;
+
+      this.items = this.getItems(this.menu);
+      this.items.forEach(function(el){ el.tabIndex = -1; });
+
+      // Use disposable for all event listeners
+      this.disposable.addEventListener(this.trigger, 'click', this.onTriggerClick.bind(this));
+      this.disposable.addEventListener(this.trigger, 'keydown', this.onTriggerKeydown.bind(this));
+
+      this.disposable.addEventListener(this.menu, 'keydown', this.onMenuKeydown.bind(this), true);
+      this.disposable.addEventListener(this.menu, 'click', this.onMenuClick.bind(this), true);
+      this.disposable.addEventListener(this.menu, 'beforetoggle', this.onBeforeToggle.bind(this));
+      this.disposable.addEventListener(this.menu, 'toggle', this.onAfterToggle.bind(this));
+
+      // Enhanced pointer handling with touch support
+      this.disposable.addEventListener(this.menu, 'pointermove', function(e){
+        if (e.pointerType === 'touch') return; // Skip touch events for hover
+        var li = e.target && e.target.closest &&
+                 e.target.closest('[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]');
+        if(!li) return;
+        var idx = self.indexOfItem(li);
+        if(idx > -1){
+          self.setInputMode('pointer');
+          self.setCurrent(idx, {focus:false});
+        }
+      }, {passive:true});
+
+      // Store focus when elements are focused
+      this.disposable.addEventListener(document, 'focusin', function(e) {
+        if (!self.menu.contains(e.target) && !self.trigger.contains(e.target)) {
+          storeFocus(e.target);
+        }
+      }, true);
+
+      // Cleanup on signal abort
+      if (this.signal) {
+        this.signal.addEventListener('abort', function() {
+          self.dispose();
+        });
+      }
+
+      this.setupSubmenus(this.menu);
+    };
+
+    MenuController.prototype.dispose = function() {
+      this.hide();
+      this.transitionManager.abort();
+      this.disposable.dispose();
+      
+      // Clear all timers
+      if (this.typeahead.timeout) {
+        clearTimeout(this.typeahead.timeout);
+        this.typeahead.timeout = null;
+      }
+      
+      this.hoverTimers.forEach(function(timer) {
+        clearTimeout(timer);
+      });
+      this.hoverTimers.clear();
+
+      // Dispose submenus
+      this.submenus.forEach(function(ctrl) {
+        ctrl.dispose();
+      });
+      this.submenus.clear();
+    };
+
+    MenuController.prototype.getItems = function(container){
+      var nodes = container.querySelectorAll('[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]');
+      var out = [];
+      for(var i=0;i<nodes.length;i++){
+        var el = nodes[i];
+        if(el.closest('[hidden],[aria-hidden="true"]')) continue;
+        if(el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
+        out.push(el);
+      }
+      return out;
+    };
+
+    MenuController.prototype.indexOfItem = function(el){ return this.items.indexOf(el); };
+
+    MenuController.prototype.setInputMode = function(mode){
+      this.kbdMode = (mode === 'keyboard');
+      if(this.kbdMode) this.menu.setAttribute('data-nav','kbd');
+      else this.menu.removeAttribute('data-nav');
+    };
+
+    MenuController.prototype.setCurrent = function(idx, opts){
+      opts = opts || {};
+      if(!this.items.length) return;
+      idx = Math.max(0, Math.min(this.items.length - 1, idx));
+      if(this.currentIndex === idx && !opts.force) return;
+      
+      for(var i=0;i<this.items.length;i++){
+        this.items[i].classList.toggle('is-active', this.kbdMode && i === idx);
+        this.items[i].tabIndex = (i === idx) ? 0 : -1;
+      }
+      this.currentIndex = idx;
+      if(opts.focus !== false){
+        try{ 
+          this.items[idx].focus({preventScroll:true}); 
+          // Ensure focused element is visible
+          this.items[idx].scrollIntoView({block: 'nearest', behavior: 'smooth'});
+        }catch(_){}
+      }
+    };
+
+    MenuController.prototype.focusFirst = function(){ this.setCurrent(0); };
+    MenuController.prototype.focusLast  = function(){ this.setCurrent(this.items.length-1); };
+    MenuController.prototype.focusNext  = function(){ if(this.items.length) this.setCurrent((this.currentIndex+1)%this.items.length); };
+    MenuController.prototype.focusPrev  = function(){ if(this.items.length) this.setCurrent((this.currentIndex-1+this.items.length)%this.items.length); };
+
+    MenuController.prototype.onTriggerClick = function(e){
+      e.preventDefault();
+      this.setInputMode('pointer');
+      this.toggle();
+    };
+
+    MenuController.prototype.onTriggerKeydown = function(e){
+      var k = e.key;
+      if(k === 'ArrowDown'){
+        e.preventDefault(); this.setInputMode('keyboard'); this.show({focus:'first'});
+      }else if(k === 'ArrowUp'){
+        e.preventDefault(); this.setInputMode('keyboard'); this.show({focus:'last'});
+      }else if(k === 'Enter' || k === ' '){
+        e.preventDefault(); this.setInputMode('keyboard'); this.toggle();
+      }
+    };
+
+    MenuController.prototype.show = function(opts){
+      var self = this;
+      opts = opts || {};
+      
+      if(this.open){ 
+        this.reposition(); 
+        return; 
+      }
+      
+      this.open = true;
+      this.lastFocused = document.activeElement;
+      this.trigger.setAttribute('aria-expanded','true');
+      
+      // Enable scroll lock for mobile
+      this.scrollLockRelease = createScrollLock(this.signal);
+      
+      this.menu.showPopover();
+      this.items = this.getItems(this.menu);
+      
+      if(!this.items.length){
+        this.menu.focus();
+      }else{
+        if(opts.focus === 'last') this.focusLast();
+        else this.focusFirst();
+      }
+
+      this.reposition();
+      
+      // Use disposable for temporary event listeners
+      this.disposable.addEventListener(window, 'scroll', function() { self.reposition(); }, true);
+      this.disposable.addEventListener(window, 'resize', function() { self.reposition(); }, {passive:true});
+      this.disposable.addEventListener(document, 'pointerdown', this.onDocumentPointerDown.bind(this), true);
+      this.disposable.addEventListener(document, 'keydown', this.onDocumentKeydown.bind(this), true);
+
+      // Start transition
+      this.transitionManager.start('in');
+    };
+
+    MenuController.prototype.hide = function(){
+      var self = this;
+      if(!this.open) return;
+      
+      this.open = false;
+      this.trigger.setAttribute('aria-expanded','false');
+      this.closeAllSubmenus();
+
+      // Start exit transition
+      this.transitionManager.start('out', function() {
+        self.menu.hidePopover();
+      });
+
+      // Release scroll lock
+      if (this.scrollLockRelease) {
+        this.scrollLockRelease();
+        this.scrollLockRelease = null;
+      }
+
+      // Enhanced focus restoration
+      if(this.closeReason !== 'tab' && this.closeReason !== 'outside-allow'){
+        var restored = false;
+        if (this.lastFocused && this.lastFocused.isConnected) {
+          try {
+            this.lastFocused.focus({preventScroll:true});
+            restored = true;
+          } catch(_) {}
+        }
+        
+        if (!restored) {
+          restoreFocus(this.trigger);
+        }
+      }
+      
+      this.closeReason = null;
+      this.lastFocused = null;
+    };
+
+    MenuController.prototype.toggle = function(){ 
+      if(this.open) this.hide(); 
+      else this.show(); 
+    };
+
+    MenuController.prototype.onBeforeToggle = function(){};
+    MenuController.prototype.onAfterToggle  = function(){};
+
+    MenuController.prototype.onMenuClick = function(e){
+      this.setInputMode('pointer');
+      var target = e.target && e.target.closest('[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]');
+      if(!target) return;
+      var role = target.getAttribute('role');
+
+      if(role === 'menuitemcheckbox'){
+        var on = target.getAttribute('aria-checked') === 'true';
+        target.setAttribute('aria-checked', on ? 'false' : 'true');
+      }else if(role === 'menuitemradio'){
+        var group = target.getAttribute('data-radio-group');
+        var scope = this.menu;
+        if(group){
+          var q = scope.querySelectorAll('[role="menuitemradio"][data-radio-group="'+group+'"]');
+          for(var i=0;i<q.length;i++) q[i].setAttribute('aria-checked', q[i]===target ? 'true':'false');
+        }else{
+          var all = scope.querySelectorAll('[role="menuitemradio"]');
+          for(var j=0;j<all.length;j++) all[j].setAttribute('aria-checked', all[j]===target ? 'true':'false');
+        }
+      }else{
+        this.hide();
+      }
+    };
+
+    MenuController.prototype.onMenuKeydown = function(e){
+      this.setInputMode('keyboard');
+      var k = e.key;
+      
+      if(k === 'Tab'){ 
+        this.closeReason='tab'; 
+        this.hide(); 
+        return; 
+      }
+      if(k === 'Escape'){ 
+        e.preventDefault(); 
+        this.closeReason='escape'; 
+        this.hide(); 
+        return; 
+      }
+      if(k === 'ArrowDown'){ 
+        e.preventDefault(); 
+        this.focusNext(); 
+        return; 
+      }
+      if(k === 'ArrowUp'){ 
+        e.preventDefault(); 
+        this.focusPrev(); 
+        return; 
+      }
+      if(k === 'Home'){ 
+        e.preventDefault(); 
+        this.focusFirst(); 
+        return; 
+      }
+      if(k === 'End'){ 
+        e.preventDefault(); 
+        this.focusLast(); 
+        return; 
+      }
+
+      // Enhanced typeahead search
+      if(k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey){
+        e.preventDefault(); // Prevent default to avoid conflicts
+        this.handleTypeahead(k);
+      }
+    };
+
+    MenuController.prototype.handleTypeahead = function(key) {
+      var self = this;
+      this.typeahead.buffer += key.toLowerCase();
+      this.searchTypeahead();
+      
+      clearTimeout(this.typeahead.timeout);
+      this.typeahead.timeout = setTimeout(function(){ 
+        self.typeahead.buffer = ''; 
+      }, 520);
+    };
+
+    MenuController.prototype.searchTypeahead = function(){
+      var q = this.typeahead.buffer; 
+      if(!q) return;
+      
+      var startIndex = this.currentIndex >= 0 ? this.currentIndex + 1 : 0;
+      
+      // Search from current position forward
+      for(var i = startIndex; i < this.items.length; i++){
+        if (this.matchesTypeahead(this.items[i], q)) {
+          this.setCurrent(i); 
+          return;
+        }
+      }
+      
+      // Wrap around and search from beginning
+      for(var i = 0; i < startIndex && i < this.items.length; i++){
+        if (this.matchesTypeahead(this.items[i], q)) {
+          this.setCurrent(i); 
+          return;
+        }
+      }
+    };
+
+    MenuController.prototype.matchesTypeahead = function(item, query) {
+      var labelEl = item.querySelector('.mi-label') || item;
+      var text = (labelEl.textContent || labelEl.innerText || '').trim().toLowerCase();
+      return text.indexOf(query) === 0;
+    };
+
+    MenuController.prototype.onDocumentKeydown = function(e){
+      if(e.key === 'Escape' && this.open){ 
+        this.closeReason='escape'; 
+        this.hide(); 
+      }
+    };
+
+    MenuController.prototype.onDocumentPointerDown = function(e){
+      this.setInputMode('pointer');
+      if(!this.open) return;
+      
+      var t = e.target;
+      var insideSelf = this.menu.contains(t) || this.trigger.contains(t);
+      var insideAnySub = false;
+      
+      this.submenus.forEach(function(ctrl){
+        if(ctrl.open && (ctrl.menu.contains(t) || ctrl.trigger.contains(t))) {
+          insideAnySub = true;
+        }
+      });
+      
+      if(!insideSelf && !insideAnySub){ 
+        this.closeReason='outside'; 
+        this.hide(); 
+      }
+    };
+
+    MenuController.prototype.reposition = function(){
+      var r = this.trigger.getBoundingClientRect();
+      var size = measure(this.menu);
+      var dir = getComputedStyle(document.documentElement).direction || 'ltr';
+      var plc = parsePlacement(this.menu.getAttribute('data-placement'), dir);
+      var vars = getVars(this.menu);
+      var c = compute(r, size, plc, vars.gap, vars.offset, {
+        width: window.innerWidth, 
+        height: window.innerHeight
+      });
+      
+      this.menu.style.left = c.left + 'px';
+      this.menu.style.top  = c.top + 'px';
+      this.menu.setAttribute('data-placement-used', c.used);
+    };
+
+    MenuController.prototype.setupSubmenus = function(container){
+      // Submenus removed as requested earlier
+    };
+
+    MenuController.prototype.closeAllSubmenus = function(){
+      this.submenus.forEach(function(ctrl){
+        ctrl.dispose();
+      });
+      this.submenus.clear();
+    };
+
+    /* ================================================================================
+       Auto-bootstrap with signal support
+    ================================================================================ */
+    function ready(fn){ 
+      if(document.readyState !== 'loading') fn(); 
+      else document.addEventListener('DOMContentLoaded', fn); 
+    }
+    
+    ready(function(){
+      var trigger = document.getElementById('menuButton');
+      var menu = document.getElementById('menu');
+      if(!trigger || !menu) return;
+
+      var controller = new AbortController();
+      var mc = new MenuController(trigger, menu, controller.signal);
+      
+      // Expose for debugging
+      window.__menu = mc;
+      window.__menuController = controller;
+
+      var settings = document.getElementById('mi-settings');
+      if(settings){ 
+        settings.addEventListener('click', function(){ 
+          alert('Open settings…'); 
+        }); 
+      }
+
+      // Enhanced font loading detection
+      if('fonts' in document){
+        var f = document.fonts;
+        if(f && f.addEventListener){ 
+          f.addEventListener('loadingdone', function(){ 
+            if(mc.open) mc.reposition(); 
+          }); 
+        }
+      }
+
+      // Clean up on page unload
+      window.addEventListener('beforeunload', function() {
+        controller.abort();
+      });
+    });
+
+    /* ================================================================================
+       CSS.escape polyfill
+    ================================================================================ */
+    if(typeof CSS === 'undefined') window.CSS = {};
+    if(typeof CSS.escape !== 'function'){
+      CSS.escape = function(s){
+        return String(s).replace(/[^a-zA-Z0-9_\-]/g, function(ch){
+          var hex = ch.codePointAt(0).toString(16).toUpperCase();
+          return '\\' + hex + ' ';
+        });
+      };
+    }
+  })();
+  </script>
+</body>
+</html>

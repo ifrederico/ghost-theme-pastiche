@@ -1,0 +1,81 @@
+{{!-- partials/components/post-actions.hbs -----------------------------------
+     Unified Post Actions (Cards + Single Post)
+     
+     Usage:
+       {{> "components/post-actions" context="card"}}  <!-- For post cards in lists -->
+       {{> "components/post-actions" context="post"}}  <!-- For single post headers -->
+     
+     Notes:
+       • Behavior is handled by: <script defer src="{{asset "assets/theme/components/post-actions.js"}}"></script>
+         (added in default.hbs). No inline JS here.
+-------------------------------------------------------------------------------}}
+
+{{#match context "post"}}
+  {{!-- ===== POST HEADER VARIANT ===== --}}
+  <div class="gh-post-action-wrapper">
+    <div class="gh-post-actions">
+
+      {{!-- Like Button / Heart --}}
+      {{#if @custom.enable_like_button}}
+        <like-button
+          api="/ghost-like-button"
+          url="{{url absolute="true"}}"
+          class="gh-post-action gh-post-like">
+        </like-button>
+      {{/if}}
+
+      {{!-- Comments (live count) --}}
+      <button class="gh-post-action gh-post-comments" type="button" aria-label="Go to comments">
+        {{> "icons/app/comment"}}
+        {{comment_count empty="0" singular="" plural="" class="gh-post-comment-count"}}
+      </button>
+
+      {{!-- Share (copy link) --}}
+      <button class="gh-post-action gh-post-share"
+              type="button"
+              data-url="{{url absolute="true"}}"
+              data-title="{{title}}"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-label="Share options">
+        {{> "icons/app/share"}}
+      </button>
+
+    </div>
+  </div>
+
+{{else}}
+  {{!-- ===== CARD FOOTER VARIANT ===== --}}
+  <div class="gh-card-actions">
+
+    {{!-- Like Button / Heart --}}
+    {{#if @custom.enable_like_button}}
+      <like-button
+        api="/ghost-like-button"
+        url="{{url absolute="true"}}"
+        class="gh-card-action gh-card-like">
+      </like-button>
+    {{/if}}
+
+    {{!-- Comments (navigate to comments on post page) --}}
+    <button class="gh-card-action gh-card-comments"
+            type="button"
+            data-post-url="{{url absolute="true"}}"
+            aria-label="View comments">
+      {{> "icons/app/comment"}}
+      {{comment_count empty="0" singular="" plural="" class="gh-card-comment-count"}}
+    </button>
+
+    {{!-- Share (copy link) --}}
+    <button class="gh-card-action gh-card-share"
+            type="button"
+            data-url="{{url absolute="true"}}"
+            data-title="{{title}}"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-label="Share options">
+      {{> "icons/app/share"}}
+    </button>
+
+  </div>
+{{/match}}
